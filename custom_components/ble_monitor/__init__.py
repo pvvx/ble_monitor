@@ -123,6 +123,7 @@ class BLEmonitor:
         self.dataqueue = {
             "binary": queue.SimpleQueue(),
             "measuring": queue.SimpleQueue(),
+            "tracker": queue.SimpleQueue(),
         }
         self.config = config
         self.dumpthread = None
@@ -165,6 +166,11 @@ class BLEmonitor:
             self.dumpthread.restart()
         else:
             self.start()
+
+    def clear_tracker(self):
+        """Clear seen devices"""
+        if self.dumpthread.is_alive():
+            self.dumpthread.clear_seen()
 
 
 class HCIdump(Thread):
@@ -228,6 +234,9 @@ class HCIdump(Thread):
         _LOGGER.debug("HCIdump thread: Init")
         self.dataqueue_bin = dataqueue["binary"]
         self.dataqueue_meas = dataqueue["measuring"]
+        self.tracker_enabled = False
+        self.tracker_seen = {}
+        self.dataqueue_tracker = dataqueue["tracker"]
         self._event_loop = None
         self._joining = False
         self.evt_cnt = 0
@@ -289,6 +298,19 @@ class HCIdump(Thread):
     def process_hci_events(self, data):
         """Parses HCI events."""
         self.evt_cnt += 1
+        if self.tracker_enabled is True:
+            # LE Meta event
+            if data.find(b'\x04\x3E', 0, 2) < 0:
+                return
+            # connectable undirected, public address
+            mac_idx = data.find(b'\x00\x00', 5, 7)
+            if mac_idx < 0:
+                return
+            mac = data[mac_idx + 2:mac_idx + 8]
+            if mac not in self.tracker_seen:
+                self.tracker_seen[mac] = mac
+                self.dataqueue_tracker.put(mac)
+
         msg, binary, measuring = self.parse_raw_message(data)
         if msg:
             if binary == measuring:
@@ -355,6 +377,10 @@ class HCIdump(Thread):
         finally:
             Thread.join(self, timeout)
             _LOGGER.debug("HCIdump thread: joined")
+
+    def clear_seen(self):
+        """Clear seen devices dict"""
+        self.tracker_seen.clear()
 
     def restart(self):
         """Restarting scanner"""
