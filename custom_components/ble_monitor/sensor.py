@@ -1,9 +1,9 @@
 """Passive BLE monitor sensor platform."""
 from datetime import timedelta
 import logging
-import asyncio
+import queue
 import statistics as sts
-# from threading import Thread
+from threading import Thread
 
 from homeassistant.const import (
     DEVICE_CLASS_BATTERY,
@@ -15,10 +15,8 @@ from homeassistant.const import (
     TEMP_CELSIUS,
     TEMP_FAHRENHEIT,
     ATTR_BATTERY_LEVEL,
-    EVENT_HOMEASSISTANT_START,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
-# from homeassistant.helpers import event
 import homeassistant.util.dt as dt_util
 
 from . import (
@@ -43,36 +41,34 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_platform(hass, conf, async_add_entities, discovery_info=None):
+def setup_platform(hass, conf, add_entities, discovery_info=None):
     """Set up the sensor platform."""
     _LOGGER.debug("Sensor platform setup")
     blemonitor = hass.data[DOMAIN]
-    bleupdater = BLEupdater(blemonitor, async_add_entities)
-    #bleupdater.start()
-    #hass.async_create_task(bleupdater.async_run())
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, bleupdater.async_run)
+    bleupdater = BLEupdater(blemonitor, add_entities)
+    bleupdater.start()
     _LOGGER.debug("Sensor platform setup finished")
     # Return successful setup
     return True
 
 
-class BLEupdater():
+class BLEupdater(Thread):
     """BLE monitor entities updater."""
 
-    def __init__(self, blemonitor, async_add_entities):
+    def __init__(self, blemonitor, add_entities):
         """Initiate BLE updater."""
-        #Thread.__init__(self, daemon=True)
+        Thread.__init__(self, daemon=True)
         _LOGGER.debug("BLE sensors updater initialization")
         self.monitor = blemonitor
-        self.dataqueue = blemonitor.dataqueue_meas
+        self.dataqueue = blemonitor.dataqueue["measuring"]
         self.config = blemonitor.config
         self.period = self.config[CONF_PERIOD]
         self.log_spikes = self.config[CONF_LOG_SPIKES]
         self.batt_entities = self.config[CONF_BATT_ENTITIES]
-        self.async_add_entities = async_add_entities
+        self.add_entities = add_entities
         _LOGGER.debug("BLE sensors updater initialized")
 
-    async def async_run(self, event=None):
+    def run(self):
         """Entities updater loop."""
 
         def temperature_limit(config, mac, temp):
@@ -100,15 +96,12 @@ class BLEupdater():
         data = None
         while True:
             try:
-                # advevent = self.dataqueue.get(block=True, timeout=1)
-                advevent = await asyncio.wait_for(self.dataqueue.get(), 1)
+                advevent = self.dataqueue.get(block=True, timeout=1)
                 if advevent is None:
                     _LOGGER.debug("Entities updater loop stopped")
                     return True
                 data = advevent
-                self.dataqueue.task_done()
-            # except queue.Empty:
-            except asyncio.TimeoutError:
+            except queue.Empty:
                 pass
             if data:
                 mibeacon_cnt += 1
@@ -140,7 +133,7 @@ class BLEupdater():
                         sensors.insert(b_i, BatterySensor(self.config, mac, sensortype))
                     if len(sensors) != 0:
                         sensors_by_mac[mac] = sensors
-                        self.async_add_entities(sensors)
+                        self.add_entities(sensors)
                 else:
                     sensors = sensors_by_mac[mac]
 
@@ -199,15 +192,14 @@ class BLEupdater():
                 continue
             ts_last = ts_now
             # restarting scanner
-            await self.monitor.async_stop()
-            await self.monitor.async_start()
+            self.monitor.restart()
             # for every updated device
             for mac, elist in sensors_by_mac.items():
                 for entity in elist:
                     if entity.pending_update is True:
                         if entity.ready_for_update is True:
                             entity.rssi_values = rssi[mac].copy()
-                            entity.async_schedule_update_ha_state(True)
+                            entity.schedule_update_ha_state(True)
             for mac in rssi:
                 rssi[mac].clear()
 
@@ -334,7 +326,7 @@ class MeasuringSensor(RestoreEntity):
             self._device_state_attributes[ATTR_BATTERY_LEVEL] = batt_attr
         self.pending_update = True
 
-    async def async_update(self):
+    def update(self):
         """Updates sensor state and attributes."""
         textattr = ""
         rdecimals = self._rdecimals
@@ -534,7 +526,7 @@ class BatterySensor(MeasuringSensor):
         self._device_state_attributes["last packet id"] = data["packet"]
         self.pending_update = True
 
-    async def async_update(self):
+    def update(self):
         """Update sensor state and attributes."""
         self._device_state_attributes["rssi"] = round(sts.mean(self.rssi_values))
         self.rssi_values.clear()
@@ -570,7 +562,7 @@ class ConsumableSensor(MeasuringSensor):
             self._device_state_attributes[ATTR_BATTERY_LEVEL] = batt_attr
         self.pending_update = True
 
-    async def async_update(self):
+    def update(self):
         """Update."""
         self._device_state_attributes["rssi"] = round(sts.mean(self.rssi_values))
         self.rssi_values.clear()

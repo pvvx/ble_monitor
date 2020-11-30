@@ -14,7 +14,6 @@ from homeassistant.const import (
     CONF_NAME,
     CONF_TEMPERATURE_UNIT,
     EVENT_HOMEASSISTANT_STOP,
-    EVENT_HOMEASSISTANT_START,
 )
 
 from Cryptodome.Cipher import AES
@@ -105,21 +104,14 @@ CONFIG_SCHEMA = vol.Schema(
 )
 
 
-async def async_setup(hass, config):
+def setup(hass, config):
     """Set up integration."""
-    #blemonitor = BLEmonitor(config[DOMAIN])
-    #hass.bus.listen(EVENT_HOMEASSISTANT_STOP, blemonitor.shutdown_handler)
-    # blemonitor.start()
-    #hass.data[DOMAIN] = blemonitor
-    # discovery.load_platform(hass, "sensor", DOMAIN, {}, config)
-    # discovery.load_platform(hass, "binary_sensor", DOMAIN, {}, config)
-    hcidump = HCIdump(hass, config[DOMAIN], None)
-    hass.data[DOMAIN] = hcidump
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, hcidump.shutdown)
-    hass.async_create_task(discovery.async_load_platform(hass, "binary_sensor", DOMAIN, {}, config))
-    hass.async_create_task(discovery.async_load_platform(hass, "sensor", DOMAIN, {}, config))
-    # discovery.load_platform(hass, "binary_sensor", DOMAIN, {}, config)
-    hass.bus.async_listen_once(EVENT_HOMEASSISTANT_START, hcidump.async_start)
+    blemonitor = BLEmonitor(config[DOMAIN])
+    hass.bus.listen(EVENT_HOMEASSISTANT_STOP, blemonitor.shutdown_handler)
+    blemonitor.start()
+    hass.data[DOMAIN] = blemonitor
+    discovery.load_platform(hass, "sensor", DOMAIN, {}, config)
+    discovery.load_platform(hass, "binary_sensor", DOMAIN, {}, config)
     return True
 
 
@@ -143,11 +135,11 @@ class BLEmonitor:
     def start(self):
         """Start receiving broadcasts."""
         _LOGGER.debug("Spawning HCIdump thread")
-        #self.dumpthread = HCIdump(
-        #    config=self.config,
-        #    dataqueue=self.dataqueue,
-        #)
-        #self.dumpthread.start()
+        self.dumpthread = HCIdump(
+            config=self.config,
+            dataqueue=self.dataqueue,
+        )
+        self.dumpthread.start()
 
     def stop(self):
         """Stop HCIdump thread(s)."""
@@ -175,11 +167,10 @@ class BLEmonitor:
             self.start()
 
 
-#class HCIdump(Thread):
-class HCIdump():
+class HCIdump(Thread):
     """Mimic deprecated hcidump tool."""
 
-    def __init__(self, hass, config, dataqueue):
+    def __init__(self, config, dataqueue):
         """Initiate HCIdump thread."""
 
         def obj0d10(xobj):
@@ -233,11 +224,10 @@ class HCIdump():
                 return None
             return rmac[10:12] + rmac[8:10] + rmac[6:8] + rmac[4:6] + rmac[2:4] + rmac[0:2]
 
-        #Thread.__init__(self)
+        Thread.__init__(self)
         _LOGGER.debug("HCIdump thread: Init")
-        self.hass = hass
-        self.dataqueue_bin = asyncio.Queue()  # dataqueue["binary"]
-        self.dataqueue_meas = asyncio.Queue()  # dataqueue["measuring"]
+        self.dataqueue_bin = dataqueue["binary"]
+        self.dataqueue_meas = dataqueue["measuring"]
         self._event_loop = None
         self._joining = False
         self.evt_cnt = 0
@@ -249,8 +239,6 @@ class HCIdump():
         self.aeskeys = {}
         self.whitelist = []
         self.report_unknown = False
-        self.conn = {}
-        self.btctrl = {}
         if self.config[CONF_REPORT_UNKNOWN]:
             self.report_unknown = True
             _LOGGER.info(
@@ -304,93 +292,76 @@ class HCIdump():
         msg, binary, measuring = self.parse_raw_message(data)
         if msg:
             if binary == measuring:
-                self.dataqueue_bin.put_nowait(msg)
-                self.dataqueue_meas.put_nowait(msg)
+                self.dataqueue_bin.put(msg)
+                self.dataqueue_meas.put(msg)
             else:
                 if binary is True:
-                    self.dataqueue_bin.put_nowait(msg)
+                    self.dataqueue_bin.put(msg)
                 if measuring is True:
-                    self.dataqueue_meas.put_nowait(msg)
+                    self.dataqueue_meas.put(msg)
 
-    async def async_start(self, event=None):
+    def run(self):
         """Run HCIdump thread."""
-        #while True:
-        _LOGGER.debug("HCIdump thread: Run")
-        mysocket = {}
-        fac = {}
-        self.conn = {}
-        self.btctrl = {}
-        if self._event_loop is None:
-            self._event_loop = self.hass.loop  # asyncio.new_event_loop()
-            asyncio.set_event_loop(self._event_loop)
-        for hci in self._interfaces:
-            try:
-                mysocket[hci] = aiobs.create_bt_socket(hci)
-            except OSError as error:
-                _LOGGER.error("HCIdump thread: OS error (hci%i): %s", hci, error)
-            else:
-                fac[hci] = getattr(self._event_loop, "_create_connection_transport")(
-                    mysocket[hci], aiobs.BLEScanRequester, None, None
-                )
-                # conn[hci], btctrl[hci] = self._event_loop.run_until_complete(fac[hci])
-                self.conn[hci], self.btctrl[hci] = await fac[hci]
-                _LOGGER.debug("HCIdump thread: connected to hci%i", hci)
-                self.btctrl[hci].process = self.process_hci_events
+        while True:
+            _LOGGER.debug("HCIdump thread: Run")
+            mysocket = {}
+            fac = {}
+            conn = {}
+            btctrl = {}
+            if self._event_loop is None:
+                self._event_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._event_loop)
+            for hci in self._interfaces:
                 try:
-                    # self._event_loop.run_until_complete(btctrl[hci].send_scan_request(self._active))
-                    await self.btctrl[hci].send_scan_request(self._active)
-                except RuntimeError as error:
-                    _LOGGER.error("HCIdump thread: Runtime error while sending scan request: %s", error)
-        #    _LOGGER.debug("HCIdump thread: start main event_loop")
-        #    try:
-        #        self._event_loop.run_forever()
-        #    finally:
-        #        _LOGGER.debug("HCIdump thread: main event_loop stopped, finishing")
-        #        for hci in self._interfaces:
-        #            self._event_loop.run_until_complete(btctrl[hci].stop_scan_request())
-        #            conn[hci].close()
-        #        self._event_loop.run_until_complete(asyncio.sleep(0))
-        #    if self._joining is True:
-        #        break
-        #    _LOGGER.debug("HCIdump thread: Scanning will be restarted")
-        #    _LOGGER.debug("%i HCI events processed for previous period.", self.evt_cnt)
-        #    self.evt_cnt = 0
-        # self._event_loop.close()
+                    mysocket[hci] = aiobs.create_bt_socket(hci)
+                except OSError as error:
+                    _LOGGER.error("HCIdump thread: OS error (hci%i): %s", hci, error)
+                else:
+                    fac[hci] = getattr(self._event_loop, "_create_connection_transport")(
+                        mysocket[hci], aiobs.BLEScanRequester, None, None
+                    )
+                    conn[hci], btctrl[hci] = self._event_loop.run_until_complete(fac[hci])
+                    _LOGGER.debug("HCIdump thread: connected to hci%i", hci)
+                    btctrl[hci].process = self.process_hci_events
+                    try:
+                        self._event_loop.run_until_complete(btctrl[hci].send_scan_request(self._active))
+                    except RuntimeError as error:
+                        _LOGGER.error("HCIdump thread: Runtime error while sending scan request: %s", error)
+            _LOGGER.debug("HCIdump thread: start main event_loop")
+            try:
+                self._event_loop.run_forever()
+            finally:
+                _LOGGER.debug("HCIdump thread: main event_loop stopped, finishing")
+                for hci in self._interfaces:
+                    self._event_loop.run_until_complete(btctrl[hci].stop_scan_request())
+                    conn[hci].close()
+                self._event_loop.run_until_complete(asyncio.sleep(0))
+            if self._joining is True:
+                break
+            _LOGGER.debug("HCIdump thread: Scanning will be restarted")
+            _LOGGER.debug("%i HCI events processed for previous period.", self.evt_cnt)
+            self.evt_cnt = 0
+        self._event_loop.close()
         _LOGGER.debug("HCIdump thread: Run finished")
 
-    async def async_stop(self):
-        """Stop HCIdump thread."""
-        for hci in self._interfaces:
-            await self.btctrl[hci].stop_scan_request()
-            self.conn[hci].close()
-            await asyncio.sleep(0)
+    def join(self, timeout=10):
+        """Join HCIdump thread."""
+        _LOGGER.debug("HCIdump thread: joining")
+        self._joining = True
+        try:
+            self._event_loop.call_soon_threadsafe(self._event_loop.stop)
+        except AttributeError as error:
+            _LOGGER.debug("%s", error)
+        finally:
+            Thread.join(self, timeout)
+            _LOGGER.debug("HCIdump thread: joined")
 
-    async def shutdown(self, event=None):
-        """shutdown handler"""
-        await self.async_stop()
-        self.dataqueue_bin.put_nowait(None)
-        self.dataqueue_meas.put_nowait(None)
-        _LOGGER.debug("M: %i", self.dataqueue_meas.qsize())
-        _LOGGER.debug("B: %i", self.dataqueue_bin.qsize())
-
-#    def join(self, timeout=10):
-#        """Join HCIdump thread."""
-#        _LOGGER.debug("HCIdump thread: joining")
-#        self._joining = True
-#        try:
-#            self._event_loop.call_soon_threadsafe(self._event_loop.stop)
-#        except AttributeError as error:
-#            _LOGGER.debug("%s", error)
-#        finally:
-#            Thread.join(self, timeout)
-#            _LOGGER.debug("HCIdump thread: joined")
-#
-#    def restart(self):
-#        """Restarting scanner"""
-#        try:
-#            self._event_loop.call_soon_threadsafe(self._event_loop.stop)
-#        except AttributeError as error:
-#            _LOGGER.debug("%s", error)
+    def restart(self):
+        """Restarting scanner"""
+        try:
+            self._event_loop.call_soon_threadsafe(self._event_loop.stop)
+        except AttributeError as error:
+            _LOGGER.debug("%s", error)
 
     def parse_raw_message(self, data):
         """Parse the raw data."""
