@@ -24,7 +24,7 @@ from homeassistant.helpers.entity_registry import (
     async_entries_for_device,
 )
 
-from .ble_parser import ble_parser, hci_get_mac
+from .ble_parser import ble_parser, BLEinterface
 from .const import (
     DEFAULT_ROUNDING,
     DEFAULT_DECIMALS,
@@ -71,7 +71,7 @@ CONFIG_YAML = {}
 UPDATE_UNLISTENER = None
 
 try:
-    BT_INTERFACES = hci_get_mac([0, 1, 2, 3])
+    BT_INTERFACES = BLEinterface.get_mac([0, 1, 2, 3])
     BT_HCI_INTERFACES = list(BT_INTERFACES.keys())
     BT_MAC_INTERFACES = list(BT_INTERFACES.values())
     DEFAULT_BT_INTERFACE = list(BT_INTERFACES.items())[0][1]
@@ -442,6 +442,7 @@ class HCIdump(Thread):
         self._joining = False
         self.evt_cnt = 0
         self.lpacket_ids = {}
+        self.adtype = {}
         self.config = config
         self._interfaces = config[CONF_HCI_INTERFACE]
         self._active = int(config[CONF_ACTIVE_SCAN] is True)
@@ -484,7 +485,7 @@ class HCIdump(Thread):
     def process_hci_events(self, data):
         """Parse HCI events."""
         self.evt_cnt += 1
-        if len(data) < 12:
+        if len(data) < 15: #or data[5] != 0 or data[6] != 0: ?
             return
         msg, binary, measuring = ble_parser(self, data)
         if msg:
@@ -496,7 +497,7 @@ class HCIdump(Thread):
                     self.dataqueue_bin.sync_q.put_nowait(msg)
                 if measuring is True:
                     self.dataqueue_meas.sync_q.put_nowait(msg)
-
+    
     def run(self):
         """Run HCIdump thread."""
         while True:
