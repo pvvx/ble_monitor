@@ -27,7 +27,7 @@ def parse_atc(self, data, source_mac, rssi):
                 "opening": (trg ^ 1) & 1}
             measuring = True
             binary = True
-            adtype = 3
+            adtype = 39
         elif msg_length == 17:
             # Parse BLE message in ATC format
             firmware = "ATC (ATC1441)"
@@ -41,7 +41,7 @@ def parse_atc(self, data, source_mac, rssi):
                 "battery": batt}
             measuring = True
             binary = False
-            adtype = 1
+            adtype = 29
         elif msg_length == 12 or msg_length == 15:
             # Parse BLE message in custom format
             atc_mac = source_mac
@@ -84,7 +84,7 @@ def parse_atc(self, data, source_mac, rssi):
                     "battery": batt,
                     "switch": (trg >> 1) & 1,
                     "opening": (trg ^ 1) & 1 }
-                adtype = 3
+                adtype = 39
             else:
                 firmware = "ATC (Encrypted)"
                 temp = payload[0]/2 - 40.0
@@ -100,29 +100,29 @@ def parse_atc(self, data, source_mac, rssi):
                     "voltage": volt,
                     "battery": batt,
                     "switch": trg }
-                adtype = 1
+                adtype = 19
             sensor_type = "CUSTOM"
             measuring = True
             binary = True
         else:
             if self.report_unknown == "ATC":
                 _LOGGER.info(
-                    "BLE ADV from UNKNOWN ATC SENSOR: RSSI: %s, MAC: %s, ADV: %s",
+                    "BLE ADV from UNKNOWN ATC SENSOR: RSSI: %s, MAC: %s, AdStruct: %s",
                     rssi,
                     source_mac.hex(),
                     data.hex()
                 )
-            _LOGGER.error("Device unkown!")
+            #_LOGGER.error("Device unkown!")
             return None, None, None
             #raise NoValidError("Device unkown")
         # check for MAC presence in message and in service data
         if atc_mac != source_mac:
-            _LOGGER.error("Invalid MAC address!")
+            _LOGGER.info("MAC: %s, Invalid MAC address!", atc_mac.hex())
             return None, None, None
             #raise NoValidError("Invalid MAC address")
         # check for MAC presence in whitelist, if needed
         if self.discovery is False and atc_mac not in self.whitelist:
-            _LOGGER.info("Not in self.whitelist!")
+            _LOGGER.info("MAC: %s, Not in self.whitelist!", atc_mac.hex())
             return None, None, None
         try:
             old_adtype = self.adtype[atc_mac]
@@ -135,6 +135,8 @@ def parse_atc(self, data, source_mac, rssi):
             # start with empty first packet
             prev_packet = None
         if old_adtype > adtype or prev_packet == packet_id:  # only process new messages
+            old_adtype -= 1
+            self.adtype[atc_mac] = adtype
             return None, None, None
         self.lpacket_ids[atc_mac] = packet_id
         if old_adtype != adtype:

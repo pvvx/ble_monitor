@@ -56,28 +56,21 @@ def parse_qingping(self, data, source_mac, rssi):
                     source_mac.hex(),
                     data.hex()
                 )
-            raise NoValidError("Device unkown")
+            #raise NoValidError("Device unkown")
+            return None, None, None
         # check for MAC presence in message and in service data
         if qingping_mac != source_mac:
-            raise NoValidError("Invalid MAC address")
+            _LOGGER.info("MAC: %s, Invalid MAC address!", qingping_mac.hex())
+            return None, None, None
         # check for MAC presence in whitelist, if needed
         if self.discovery is False and qingping_mac not in self.whitelist:
-            _LOGGER.info("Not in self.whitelist!")
+            _LOGGER.info("MAC: %s, Not in self.whitelist!", qingping_mac.hex())
             return None, None, None
-        try:
-            packet_id = self.lpacket_ids[qingping_mac] + 1
-        except KeyError:
-            # start with empty first packet
-            packet_id = 0
-        #if prev_packet == packet_id:
-        #    # only process new messages
-        #    return None, None, None
-        self.lpacket_ids[qingping_mac] = packet_id
         result.update({
             "rssi": rssi,
             "mac": ''.join('{:02X}'.format(x) for x in qingping_mac),
             "type": sensor_type,
-            "packet": packet_id,
+            "packet": "none",
             "firmware": firmware,
             "data": True
         })

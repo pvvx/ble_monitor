@@ -198,8 +198,8 @@ def obj0020(xobj):
 # {dataObject_id: (converter, binary, measuring)
 xiaomi_dataobject_dict = {
     0x0003: (obj0300, True, False),
-    0x0010: (obj1000, False, True),
     0x000F: (obj0f00, True, True),
+    0x0010: (obj1000, False, True),
     0x1001: (obj0110, False, True),
     0x1004: (obj0410, False, True),
     0x1005: (obj0510, True, True),
@@ -207,6 +207,8 @@ xiaomi_dataobject_dict = {
     0x1007: (obj0710, True, True),
     0x1008: (obj0810, False, True),
     0x1009: (obj0910, False, True),
+    0x100A: (obj0a10, True, True),
+    0x100D: (obj0d10, False, True),
     0x1010: (obj1010, False, True),
     0x1012: (obj1210, True, False),
     0x1013: (obj1310, False, True),
@@ -214,8 +216,6 @@ xiaomi_dataobject_dict = {
     0x1017: (obj1710, True, False),
     0x1018: (obj1810, True, False),
     0x1019: (obj1910, True, False),
-    0x100A: (obj0a10, True, True),
-    0x100D: (obj0d10, False, True),
     0x2000: (obj0020, False, True),
 }
 # 0  1  2 3  4 5  6 7  8  9         14 15
@@ -283,7 +283,7 @@ def parse_xiaomi(self, data, source_mac, rssi):
         if frctrl_mac_include != 0:
             i = 15
             if msg_length < i:
-                _LOGGER.error("MAC: %s, Invalid adstruct data length!", xiaomi_mac.hex())
+                _LOGGER.error("MAC: %s, Invalid AdStruct data length!", xiaomi_mac.hex())
                 return None, None, None
             xiaomi_mac_i = data[i-6:i]
             xiaomi_mac = xiaomi_mac_i[::-1]
@@ -297,29 +297,29 @@ def parse_xiaomi(self, data, source_mac, rssi):
         except KeyError:
             # start with empty first packet
             old_adtype = 0
-        if old_adtype > 2:
-            # included advertise package with more precision (pvvx)
-            return None, None, None
         try:
             prev_packet = self.lpacket_ids[xiaomi_mac]
         except KeyError:
             # start with empty first packet
             prev_packet = None, None, None
-        if prev_packet == packet_id:
-            # only process new messages
+        # included advertise package with more precision (pvvx)
+        # only process new messages
+        if old_adtype > 9 or prev_packet == packet_id:
+            old_adtype -= 1
+            self.adtype[xiaomi_mac] = old_adtype
             return None, None, None
         self.lpacket_ids[xiaomi_mac] = packet_id
         if frctrl_capability_include != 0:
             i += 1
             if msg_length < i:
-                _LOGGER.error("MAC: %s, adstruct: %s, Invalid adstruct data length!", xiaomi_mac.hex(), data.hex())
+                _LOGGER.error("MAC: %s, AdStruct: %s, Invalid AdStruct data length!", xiaomi_mac.hex(), data.hex())
                 return None, None, None
             capability_types = data[i-1]
             sinfo += ', Capability: ' + hex(capability_types)
             if (capability_types & 0x20) != 0:
                 i += 1
                 if msg_length < i:
-                    _LOGGER.error("MAC: %s, adstruct: %s, Invalid adstruct data length!", xiaomi_mac.hex(), data.hex())
+                    _LOGGER.error("MAC: %s, AdStruct: %s, Invalid AdStruct data length!", xiaomi_mac.hex(), data.hex())
                     return None, None, None
                 capability_io = data[i-1]
                 sinfo += ', IO: ' + hex(capability_io)
@@ -331,17 +331,17 @@ def parse_xiaomi(self, data, source_mac, rssi):
                 firmware = "Xiaomi (Encrypted)"
                 # check for minimum length of encrypted advertisement
                 if msg_length < i + 9:
-                    _LOGGER.info(sinfo)
-                    _LOGGER.error("%s, adstruct: %s, Invalid encrypted data length!", sinfo, data.hex())
+                    _LOGGER.error("%s, AdStruct: %s, Invalid encrypted data length!", sinfo, data.hex())
                     return None, None, None
                 packet_id += (data[-7]<<8)+(data[-6]<<16)+(data[-5]<<24)
                 # try to find encryption key for current device
                 try:
                     key = self.aeskeys[xiaomi_mac_i]
                 except KeyError:
-                    _LOGGER.error("%s, adstruct: %s, No encryption key found!", sinfo, data.hex())
+                    _LOGGER.error("%s, AdStruct: %s, No encryption key found!", sinfo, data.hex())
                     # no encryption key found
-                    raise NoValidError("No encryption key found")
+                    #raise NoValidError("No encryption key found")
+                    return None, None, None
 
                 nonce = b"".join([xiaomi_mac_i, data[6:9], data[-7:-4]])
                 cipherpayload = data[i:-7]
@@ -351,20 +351,20 @@ def parse_xiaomi(self, data, source_mac, rssi):
                 try:
                     payload = cipher.decrypt_and_verify(cipherpayload, token)
                 except ValueError as error:
-                    _LOGGER.error("%s, Decryption failed(!): %s", sinfo, error)
+                    _LOGGER.error("%s, AdStruct: %s, Decryption failed! %s", sinfo, data.hex(), error)
                     _LOGGER.error("token: %s", token.hex())
                     _LOGGER.error("nonce: %s", nonce.hex())
-                    _LOGGER.error("encrypted_payload: %s", data[i:].hex())
+                    _LOGGER.error("encrypted_payload: %s", cipherpayload.hex())
                     raise NoValidError("Error decrypting with arguments")
                 if payload is None:
-                    _LOGGER.error("%s, adstruct: %s, Decrypted payload is None!", sinfo, data.hex())
+                    _LOGGER.error("%s, AdStruct: %s, Decrypted payload is None!", sinfo, data.hex())
                     raise NoValidError("Decryption failed")
             else:   # No encryption
                 # check minimum advertisement length with data
                 firmware = "Xiaomi (No encryption)"
                 sinfo += ', No encryption'
                 if msg_length < i + 3:
-                    _LOGGER.error("%s, adstruct: %s, Invalid Object length", sinfo, data.hex())
+                    _LOGGER.error("%s, AdStruct: %s, Invalid Object length", sinfo, data.hex())
                     return None, None, None
                 payload = data[i:]
         else: # Does not contain Object
