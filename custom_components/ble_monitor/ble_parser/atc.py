@@ -1,6 +1,7 @@
 # Parser for ATC BLE advertisements
 import logging
 import struct
+from Cryptodome.Cipher import AES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ def parse_atc(self, data, source_mac, rssi):
         # Check for the atc1441 or custom format
         if msg_length == 19:
             # Parse BLE message in custom format
-            firmware = "ATC (PVVX)"
+            firmware = "PVVX (No encryption)"
             sensor_type = "CUSTOM"
             atc_mac = data[4:10]
             atc_mac = atc_mac[::-1]
@@ -23,7 +24,7 @@ def parse_atc(self, data, source_mac, rssi):
                 "voltage": volt / 1000,
                 "battery": batt,
                 "switch": (trg >> 1) & 1,
-                "opening": (trg & 1) ^ 1}
+                "opening": (trg ^ 1) & 1}
             measuring = True
             binary = True
             adtype = 3
@@ -41,6 +42,68 @@ def parse_atc(self, data, source_mac, rssi):
             measuring = True
             binary = False
             adtype = 1
+        elif msg_length == 12 or msg_length == 15:
+            # Parse BLE message in custom format
+            atc_mac = source_mac
+            atc_mac_i = atc_mac[::-1]
+            # try to find encryption key for current device
+            try:
+                key = self.aeskeys[atc_mac_i]
+            except KeyError:
+                _LOGGER.error("MAC: %s, AdStruct: %s,, No encryption key found!", atc_mac.hex(), data.hex())
+                # no encryption key found
+                return None, None, None
+                #raise NoValidError("No encryption key found")
+            nonce = b"".join([atc_mac_i, data[:5]])
+            cipherpayload = data[5:-4]
+            token = data[-4:]
+            cipher = AES.new(key, AES.MODE_CCM, nonce=nonce, mac_len=4)
+            cipher.update(b"\x11")
+            try:
+                payload = cipher.decrypt_and_verify(cipherpayload, token)
+            except ValueError as error:
+                _LOGGER.error("MAC: %s, AdStruct: %s, Decryption failed(!): %s", atc_mac.hex(), data.hex(), error)
+                _LOGGER.error("token: %s", token.hex())
+                _LOGGER.error("nonce: %s", nonce.hex())
+                _LOGGER.error("encrypted_payload: %s", cipherpayload.hex())
+                raise NoValidError("Error decrypting with arguments")
+            if payload is None:
+                _LOGGER.error("MAC: %s, AdStruct: %s, Decrypted payload is None!", atc_mac.hex(), data.hex())
+                raise NoValidError("Decryption failed")
+            packet_id = data[4]
+            if msg_length == 15:
+                firmware = "PVVX (Encrypted)"
+                (temp, humi, batt, trg) = struct.unpack("<hHBB", payload)
+                if batt > 100:
+                    batt = 100
+                volt = 2.2 + (3.1 - 2.2) * (batt / 100)
+                result = {
+                    "temperature": temp/100,
+                    "humidity": humi/100,
+                    "voltage": volt,
+                    "battery": batt,
+                    "switch": (trg >> 1) & 1,
+                    "opening": (trg ^ 1) & 1 }
+                adtype = 3
+            else:
+                firmware = "ATC (Encrypted)"
+                temp = payload[0]/2 - 40.0
+                humi = payload[1]/2
+                batt = payload[2]&0x7f
+                trg = payload[2]>>7
+                if batt > 100:
+                    batt = 100
+                volt = 2.2 + (3.1 - 2.2) * (batt / 100)
+                result = {
+                    "temperature": temp,
+                    "humidity": humi,
+                    "voltage": volt,
+                    "battery": batt,
+                    "switch": trg }
+                adtype = 1
+            sensor_type = "CUSTOM"
+            measuring = True
+            binary = True
         else:
             if self.report_unknown == "ATC":
                 _LOGGER.info(
