@@ -1,3 +1,5 @@
+# Deprecated, go [custom-components/ble_monitor](https://github.com/custom-components/ble_monitor)!
+
 # Passive BLE Monitor integration
 
 ### Alternative version(!): BLE Monitor for Xiaomi MiBeacon, Qingping, ATC sensors
